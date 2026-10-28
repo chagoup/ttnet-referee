@@ -132,11 +132,14 @@ def check_videos(vdir):
     import cv2
     print('\n--- 5. 视频文件 ---')
     if not os.path.isdir(vdir):
-        print('  {} 目录不存在: {}'.format(WARN, vdir))
+        os.makedirs(vdir, exist_ok=True)
+        print('  {} videos/ 目录不存在，已自动创建'.format(WARN))
+        print('       请先获取测试视频：python scripts/download_videos.py')
         return 0
     files = sorted(f for f in os.listdir(vdir) if f.lower().endswith('.mp4'))
     if not files:
-        print('  {} 目录下没有 mp4'.format(WARN))
+        print('  {} videos/ 下没有 mp4，尚未获取测试视频'.format(WARN))
+        print('       请运行：python scripts/download_videos.py')
         return 0
     problems = 0
     for f in files:
