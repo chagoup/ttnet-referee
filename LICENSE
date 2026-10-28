@@ -1,0 +1,60 @@
+# 许可与来源说明
+
+## 重要：本仓库是衍生作品
+
+本仓库的模型代码、权重与算法思路均源自以下开源项目，**不是原创作品**：
+
+| 来源 | 地址 | 说明 |
+|---|---|---|
+| TTNet 官方实现 | https://github.com/maudzung/TTNet-Real-time-Analysis-System-for-Table-Tennis-Pytorch | 模型结构 `models/TTNet.py`、权重训练流程 |
+| TTNet 论文 | https://arxiv.org/pdf/1705.07115 | Roman Voeikov, Nikolay Falaleev, Ruslan Baikulov. CVPR 2020 |
+| OpenTTGames 数据集 | 见上游项目 `prepare_dataset/` | 测试视频 test_1 / test_6 的来源 |
+
+**上游项目 `maudzung/TTNet` 未附带 LICENSE 文件。**
+在未取得上游明确授权前，本仓库不主张任何开源许可。
+
+## 因此，本仓库的授权状态
+
+**未授予开源许可（No license granted）。**
+
+这意味着：根据著作权法默认规则，你**不得**复制、分发、修改或商用本仓库内容，
+除非：
+
+1. 你已从上游项目作者处取得授权；或
+2. 你的使用属于当地法律允许的合理使用范围。
+
+本仓库当前设为 **Public** 仅为便于团队内部跨设备部署与技术交流，
+**公开可见不等于授权使用**。
+
+## 如需正式对外发布
+
+建议按以下顺序处理：
+
+1. 联系 `maudzung/TTNet` 作者，确认代码与权重的授权条款；
+2. 确认 TTNet 论文所属机构的模型权重使用限制（学术 vs 商用常不同）；
+3. 确认 OpenTTGames 数据集许可（影响随仓库分发的测试视频）；
+4. 取得授权后，再替换本文件为正式 LICENSE（如 MIT / Apache-2.0）。
+
+## 本项目自身新增的部分
+
+以下内容由本项目独立编写，与上游无关：
+
+- `src/referee/` 全部代码（事件提取、回合判定、计分状态机、比分渲染）
+- `src/infer.py`、`src/selfcheck.py`、`scripts/download_videos.py`
+- `TTNet.__normalize__` 的设备自适应修复
+- 权重导出脚本与 `checkpoints/ttnet_model.pth` 的格式转换
+
+这部分若需单独授权，请联系本仓库维护者。
+
+## 引用
+
+若本仓库对你的研究有帮助，请优先引用上游论文：
+
+```bibtex
+@article{TTNet,
+  author = {Roman Voeikov, Nikolay Falaleev, Ruslan Baikulov},
+  title = {TTNet: Real-time temporal and spatial video analysis of table tennis},
+  year = {2020},
+  conference = {CVPR 2020},
+}
+```

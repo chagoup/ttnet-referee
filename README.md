@@ -295,9 +295,40 @@ python src/infer.py --video videos/test_6.mp4 --max-frames 1000
 
 ## 九、复现本包的裁剪过程
 
-如需重新生成，参见 `../TTnet1.0` 原项目：
+如需重新生成，参见原项目 `TTnet1.0`：
 
 - 源码来自 `TTnet1.0/src`
 - 权重来自 `TTnet1.0/checkpoints/ttnet_3rd_phase/ttnet_3rd_phase_epoch_30.pth`
   （键名带 `model.` 前缀，需剥离后重存）
 - 视频来自 `TTnet1.0/dataset/test/videos`
+
+---
+
+## 十、来源与授权（重要）
+
+本仓库是**衍生作品**，模型代码与权重源自：
+
+- [maudzung/TTNet-Real-time-Analysis-System-for-Table-Tennis-Pytorch](https://github.com/maudzung/TTNet-Real-time-Analysis-System-for-Table-Tennis-Pytorch)
+- 论文：TTNet, CVPR 2020（Roman Voeikov, Nikolay Falaleev, Ruslan Baikulov）
+- 测试视频来自 OpenTTGames 数据集
+
+**上游项目未附带 LICENSE 文件，因此本仓库不主张任何开源许可
+（No license granted）。**
+
+仓库当前为 Public 仅为便于跨设备部署与交流，**公开可见不等于授权使用**。
+正式对外发布前请先取得上游授权，详见 [LICENSE](LICENSE)。
+
+本项目独立编写、与上游无关的部分：`src/referee/` 全部代码、
+`src/infer.py`、`src/selfcheck.py`、`scripts/download_videos.py`、
+以及 `TTNet.__normalize__` 的设备自适应修复。
+
+引用请优先使用上游论文：
+
+```bibtex
+@article{TTNet,
+  author = {Roman Voeikov, Nikolay Falaleev, Ruslan Baikulov},
+  title = {TTNet: Real-time temporal and spatial video analysis of table tennis},
+  year = {2020},
+  conference = {CVPR 2020},
+}
+```
