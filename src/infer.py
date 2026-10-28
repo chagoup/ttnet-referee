@@ -70,7 +70,8 @@ def pick_device(requested='auto'):
 def run_one(video_path, weights, out_dir, device='cpu',
             bounce_thresh=0.65, net_thresh=0.5,
             ball_thresh=0.05, min_confidence=0.25,
-            max_frames=None, render_video=False, stride=1, quiet=False):
+            max_frames=None, render_video=False, render_scale=1.0,
+            stride=1, quiet=False):
     """对单个视频跑「推理 → 事件 → 判分」，并落盘结果。"""
     name = os.path.splitext(os.path.basename(video_path))[0]
     os.makedirs(out_dir, exist_ok=True)
@@ -99,6 +100,13 @@ def run_one(video_path, weights, out_dir, device='cpu',
     n_frames = n_visible = 0
     last_ts_seen = None
     events_all = []
+    # 渲染用的逐帧快照，直接在主推理循环里顺手记录，
+    # 而不是渲染时再重建一遍状态机 —— 重建会有两个隐患：
+    #   1) 两份结果可能不一致（视频比分 ≠ JSON 比分）；
+    #   2) 重建路径容易漏调 finalize()，末尾那一分就丢了。
+    snapshots = []          # 每项: (timestamp_s, score_a, score_b, server)
+    timeline = []           # 每项: (timestamp_s, 事件文案)
+
     for obs in adapter.observations_from_video(
             video_path, max_frames=max_frames,
             progress_every=None if quiet else 500,
@@ -111,11 +119,20 @@ def run_one(video_path, weights, out_dir, device='cpu',
         for ev in extractor.process(obs, traj):
             events_all.append(ev)
             machine.consume(ev)
+            if ev.type in (EventType.BOUNCE, EventType.NET_HIT):
+                suffix = ' · {} 侧'.format(ev.side) if ev.side in (Side.A, Side.B) else ''
+                timeline.append((ev.timestamp_s,
+                                 ('落台' if ev.type == EventType.BOUNCE else '擦网') + suffix))
         # 必须用 tick_deep 而不是 tick：
         # tick()      只处理「回合超时休眠」（不判分）
         # tick_deep() 先跑 _check_rally_break()，才包含「落台序列中断 -> 判分」
         # 用错会导致整场只靠「同侧连弹」判分，漏掉约 2/3 的分。
         machine.tick_deep(obs.timestamp_s)
+
+        if render_video:
+            s = machine.scoreboard
+            snapshots.append((obs.timestamp_s, s['score'][Side.A],
+                              s['score'][Side.B], s['server']))
 
     for ev in extractor.flush():
         events_all.append(ev)
@@ -125,6 +142,11 @@ def run_one(video_path, weights, out_dir, device='cpu',
     # 否则末尾的落台永远无法判分（原项目实测 test_2 末 8 个 bounce 全丢）。
     if last_ts_seen is not None:
         machine.finalize(last_ts_seen)
+        # 终局比分只补到最后一帧，绝不向前倒灌（倒灌会制造时序错位）
+        if render_video and snapshots:
+            s = machine.scoreboard
+            snapshots[-1] = (last_ts_seen, s['score'][Side.A],
+                             s['score'][Side.B], s['server'])
 
     sb = machine.scoreboard
     elapsed = time.time() - t0
@@ -167,10 +189,16 @@ def run_one(video_path, weights, out_dir, device='cpu',
     if render_video:
         try:
             out_mp4 = os.path.join(out_dir, '{}_score.mp4'.format(name))
-            _render(video_path, out_mp4, machine, events_all, adapter)
+            print('[渲染] 叠加比分 UI…')
+            n_rendered, codec = _render(video_path, out_mp4, snapshots, timeline,
+                                        max_frames=max_frames, scale=render_scale)
             result['rendered_video'] = os.path.basename(out_mp4)
+            result['rendered_frames'] = n_rendered
+            result['render_codec'] = codec
             if not quiet:
-                print('比分视频: {}'.format(out_mp4))
+                size_mb = os.path.getsize(out_mp4) / 1048576 if os.path.isfile(out_mp4) else 0
+                print('比分视频: {}  ({} 帧, {} 编码, {:.1f} MB)'.format(
+                    out_mp4, n_rendered, codec, size_mb))
         except Exception as exc:      # 渲染失败不应影响判分结果
             print('[警告] 渲染失败，判分结果已保留: {}'.format(exc))
 
@@ -221,68 +249,103 @@ def _format_report(r):
     return '\n'.join(lines) + '\n'
 
 
-def _render(video_path, out_path, machine, events_all, adapter):
-    """可选：把比分叠加回视频。边缘板上若嫌慢可不开 --render。"""
+def _open_writer(out_path, fps, w, h):
+    """选一个体积合理的编码器创建 VideoWriter。
+
+    实测（本机 OpenCV 5.0 / Windows，1080p 真实球赛帧，60 帧样本）：
+
+        avc1  0.250 MB/帧   ← 缺 openh264 库，退回近无损，体积失控
+        mp4v  0.027 MB/帧   ← 默认选它
+        MJPG  0.128 MB/帧
+
+    所以这里**优先 mp4v**，不是常说的 H.264。avc1 只在显式确认可用时才该用，
+    否则 16800 帧的 test_1 会写出 4GB+ 的文件。
+    """
+    attempts = [('mp4v', 'MPEG-4'), ('avc1', 'H.264'), ('MJPG', 'Motion-JPEG')]
+    for fourcc, label in attempts:
+        writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*fourcc), fps, (w, h))
+        if writer.isOpened():
+            return writer, fourcc
+        writer.release()
+    raise RuntimeError('没有可用的视频编码器（试过 mp4v / avc1 / MJPG）')
+
+
+def _render(video_path, out_path, snapshots, timeline, fade_s=1.6,
+            progress_every=1000, max_frames=None, scale=1.0):
+    """把比分 UI 叠加回原视频。
+
+    使用的 snapshots / timeline 由主推理循环产出，因此视频里看到的比分
+    与 JSON 报告**必然一致**，不存在两套逻辑各自算一遍的风险。
+
+    :param snapshots: [(timestamp_s, score_a, score_b, server), ...] 时间升序
+    :param timeline:  [(timestamp_s, 事件文案), ...] 时间升序
+    :param scale: 输出缩放比例。0.5 即输出 960x540，体积约为 1/4。
+        边缘板上如果只是看比分，没必要保留 1080p。
+    """
     from referee.scoreboard_ui import ScoreboardUI
 
-    # 复用判分轨迹：按事件时刻重建「帧号 -> 比分」
-    evs = sorted([e for e in events_all if e.type != EventType.BALL_LOST],
-                 key=lambda e: (e.timestamp_s, e.type))
-    from referee.unified_types import Event as OldEvent
-    m2 = TableTennisStateMachine(verbose=False, cumulative_mode=True)
-    timeline = []
-    idx = 0
     cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError('无法打开视频: {}'.format(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    cap.release()
+    src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    w = max(2, int(src_w * scale) // 2 * 2)   # 保持偶数，编码器要求
+    h = max(2, int(src_h * scale) // 2 * 2)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+    if max_frames is not None:
+        total = min(total, max_frames) if total else max_frames
 
-    snapshots = {}
-    last_ts = evs[-1].timestamp_s if evs else 0.0
-    t = 0.0
-    fid = 0
-    while t <= last_ts:
-        while idx < len(evs) and evs[idx].timestamp_s <= t:
-            e = evs[idx]
-            m2.consume(e)
-            if e.type in (EventType.BOUNCE, EventType.NET_HIT):
-                side = ' · {} 侧'.format(e.side) if e.side in (Side.A, Side.B) else ''
-                timeline.append((e.timestamp_s,
-                                 ('落台' if e.type == EventType.BOUNCE else '擦网') + side))
-            idx += 1
-        m2.tick_deep(t)
-        sb = m2.scoreboard
-        snapshots[fid] = (sb['score'][Side.A], sb['score'][Side.B], sb['server'])
-        fid += 1
-        t = fid / fps
+    out_dir = os.path.dirname(os.path.abspath(out_path))
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    writer, used_codec = _open_writer(out_path, fps, w, h)
 
     ui = ScoreboardUI()
-    cap = cv2.VideoCapture(video_path)
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-    cur = (0, 0, 'A')
-    ei = 0
+    cur = (0, 0, 'A')       # 起始比分；首帧还没观测时用这个
+    si = 0                  # snapshots 指针
+    ti = 0                  # timeline 指针
     last_ev_ts = None
     last_ev_text = None
     n = 0
     while True:
+        # --max-frames 调试时只渲染这些帧，不去读整段视频
+        if max_frames is not None and n >= max_frames:
+            break
         ret, frame = cap.read()
         if not ret:
             break
-        if n in snapshots:
-            cur = snapshots[n]
         ts = n / float(fps)
-        while ei < len(timeline) and timeline[ei][0] <= ts:
-            last_ev_ts, last_ev_text = timeline[ei]
-            ei += 1
+
+        # 推进比分快照：取所有 ts <= 当前时刻的最后一个
+        while si < len(snapshots) and snapshots[si][0] <= ts:
+            cur = snapshots[si][1:]
+            si += 1
+        # 推进事件提示
+        while ti < len(timeline) and timeline[ti][0] <= ts:
+            last_ev_ts, last_ev_text = timeline[ti]
+            ti += 1
+
         age = (ts - last_ev_ts) if last_ev_ts is not None else None
-        text = last_ev_text if (age is not None and age < 1.6) else None
+        text = last_ev_text if (age is not None and age < fade_s) else None
+
+        # 先缩放再画 UI：比分面板按帧尺寸自适应，缩放后字号依然清晰，
+        # 且比「画完再缩」省一半时间。
+        if (w, h) != (src_w, src_h):
+            frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_AREA)
+
         ui.draw(frame, score_a=cur[0], score_b=cur[1], games_a=0, games_b=0,
                 server=cur[2], event_text=text, event_age=age, cumulative=True)
         writer.write(frame)
+
         n += 1
+        if progress_every and n % progress_every == 0:
+            pct = ' ({:.0%})'.format(n / total) if total else ''
+            print('  渲染 {}/{} 帧{}'.format(n, total or '?', pct))
+
     cap.release()
     writer.release()
+    return n, used_codec
 
 
 def main(argv=None):
@@ -312,6 +375,9 @@ def main(argv=None):
                          '算力降到 1/4，窗口仍是连续 9 帧不影响精度')
     ap.add_argument('--render', action='store_true',
                     help='额外输出叠加比分的 mp4（较慢）')
+    ap.add_argument('--render-scale', type=float, default=1.0,
+                    help='渲染输出缩放比例，默认 1.0（原分辨率）。'
+                         '传 0.5 输出 960x540，体积约为 1/4，看比分足够')
     ap.add_argument('--quiet', action='store_true')
     args = ap.parse_args(argv)
 
@@ -327,6 +393,7 @@ def main(argv=None):
                         min_confidence=args.min_confidence,
                         max_frames=args.max_frames,
                         render_video=args.render,
+                        render_scale=args.render_scale,
                         stride=args.stride,
                         quiet=args.quiet)
             results.append(r)
