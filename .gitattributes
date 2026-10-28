@@ -1,0 +1,20 @@
+# 统一换行符处理，避免 Windows/Linux 之间来回改动整个文件
+* text=auto
+
+# 源码强制 LF（Python/bash 在 Linux 板上运行时更安全）
+*.py    text eol=lf
+*.sh    text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# Windows 批处理必须 CRLF
+*.bat   text eol=crlf
+
+# 二进制文件不做换行转换
+*.pth   binary
+*.mp4   binary
+*.jpg   binary
+*.png   binary
+*.zip   binary

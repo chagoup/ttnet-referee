@@ -1,0 +1,14 @@
+# TTNet 乒乓球裁判 · 边缘板推理依赖
+#
+# 只含推理必需的包。训练相关依赖（scikit-learn / tensorboardX / tqdm /
+# easydict）已从代码中移除，无需安装。
+#
+# 硬件板上请优先使用厂商提供的 torch / opencv 版本：
+#   - RK3588 + RKNN：torch 用厂商轮子，模型可转 rknn
+#   - Jetson：用 NVIDIA 提供的 jetpack 版 torch
+# 下面版本为通用最低要求。
+
+torch>=1.5.0
+numpy>=1.20.0
+opencv-python>=4.5.0
+Pillow>=8.0.0
